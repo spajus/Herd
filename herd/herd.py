@@ -137,6 +137,7 @@ def run(local_file, remote_file, hosts):
 
 def transfer(host, local_file, remote_target, retry=0):
     rp = opts['remote_path']
+    named_screen = opts['named_screen']
     file_name = os.path.basename(local_file)
     remote_file = '%s/%s' % (rp, file_name)
     if ssh(host, 'test -d %s/BitTornado' % rp) != 0:
@@ -147,10 +148,15 @@ def transfer(host, local_file, remote_target, retry=0):
         scp(host, herd_py, '%s/herd.py' % rp)
     log.info("Copying %s to %s:%s" % (local_file, host, remote_file))
     scp(host, local_file, remote_file)
+    if named_screen and ssh(host, 'which screen') != 0:
+        log.warn('screen not available in %s' % (host))
+        named_screen = False
     command = 'python %s/murder_client.py peer %s %s' % (
         rp,
         remote_file,
         remote_target)
+    if named_screen:
+        command = 'screen -S %s -- %s' % (named_screen, command)
     log.info("running \"%s\" on %s", command, host)
     result = ssh(host, command)
     if result == 0:
@@ -158,6 +164,8 @@ def transfer(host, local_file, remote_target, retry=0):
             rp,
             remote_file,
             remote_target)
+        if named_screen:
+            cmd = 'screen -S %s -- %s' % (named_screen, cmd)
         s = threading.Thread(target=ssh, args=(host, cmd,))
         s.daemon = True
         s.start()
@@ -166,7 +174,7 @@ def transfer(host, local_file, remote_target, retry=0):
         while retry != 0:
             retry = retry - 1
             log.info("retrying on %s" % host)
-            transfer(host, local_file, remote_target, 0)
+            transfer(host, local_file, remote_target, 0, named_screen)
     return host
 
 
@@ -199,6 +207,11 @@ def mktorrent(file_name, tracker):
                                 {'target': torrent_file[1],
                                     'piece_size_pow2': 0})
     return torrent_file[1]
+
+
+def screen_exists():
+    return_code = subprocess.call(['which', 'screen'])
+    return_code == 0
 
 
 def track():
@@ -239,13 +252,17 @@ def herdmain():
 
 def run_with_opts(local_file, remote_file, hosts='', retry=0, port=8998,
                   remote_path='/tmp/herd', data_file='./data',
-                  log_dir='/tmp/herd', hostlist=False):
+                  log_dir='/tmp/herd', hostlist=False, named_screen=''):
     """Can include herd into existing python easier."""
     global opts
     opts['local-file'] = local_file
     opts['remote-file'] = remote_file
     opts['hosts'] = hosts
     opts['retry'] = retry
+    if screen_exists:
+        opts['named_screen'] = named_screen
+    else:
+        opts['named_screen'] = False
     opts['port'] = get_random_open_port(port)
     opts['remote_path'] = remote_path
     opts['data_file'] = data_file
@@ -274,6 +291,10 @@ def entry_point():
                         help="Number of times to retry in case of failure. " +
                         "Use -1 to make it retry forever (not recommended)")
 
+    parser.add_argument('--named-screen',
+                        default='',
+                        help="If value is given, runs murder inside named screen for easy cleanup")
+
     parser.add_argument('--port',
                         default=8998,
                         help="Port number to run the tracker on. Port range " +
@@ -300,6 +321,9 @@ def entry_point():
                         help="Seed local file from torrent")
 
     opts = vars(parser.parse_args())
+
+    if not screen_exists():
+        opts['named_screen'] = False
 
     # potentially select a random port
     opts['port'] = get_random_open_port(opts['port'])
